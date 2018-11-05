@@ -23,11 +23,12 @@ need to do it by hand or with this script.
 This script is written by leoluk.
 Please look at www.leoluk.de/paperless-caching/pqdl for updates.
 
+This tool is no longer maintained by leolux. This is a fork which i try to keep working.
 """
 
-__version__ = "0.3.3"
-__status__ = "beta"
-__author__ = "Leopold Schabel"
+__version__ = "0.3.5.2"
+__status__ = "stable"
+__author__ = "Leopold Schabel (leoluk) - maintained by lx-crisc"
 
 ### pylint
 # pylint: disable-msg=E1102, W0142
@@ -277,7 +278,7 @@ with -d -l to get the friendly name or other parameters.""")
                       "that can't be removed like My Finds.", default=False,
                       action='store_true')
     parser.add_option('--noupdate', help="Skip the online update check. Please "
-                      "make sure to check updates yourself!", default=False,
+                      "make sure to check updates yourself!", default=True,
                       action='store_true')
     parser.add_option('--nobrowser', help="Don't open the browser on new "
                       "versions. The browser will be opened only once even "
@@ -516,6 +517,11 @@ wildcards yet."""
 
     return opts, args
 
+def unicode_values_to_strings(dict_with_unicode_values):
+    dict_with_string_values = {}
+    for each_key in dict_with_unicode_values:
+        dict_with_string_values[each_key] = dict_with_unicode_values[each_key].encode('utf8')
+    return dict_with_string_values
 
 class PqDLError(Exception):
     """Generic error for PqDL errors."""
@@ -565,14 +571,30 @@ class PqBrowser(mechanize.Browser):
     def login_gc(self, username, password, urlbase):
         """Login to GC.com site."""
         logger = logging.getLogger('browser.login')
-        self.open("%s/login/default.aspx?RESET=Y"
+        self.open("%s/account/signin?RESETCOMPLETE=true"
                   % urlbase)
         #for f in self.forms():
         #   print f
-        self.select_form(action="/account/login?RESET=Y")
-        self.form['Username'] = username
-        self.form['Password'] = password
+
+        #find the login form dynamically by looking for
+        #for a form containing the input field "Username"
+        for each_form in self.forms():
+            try:
+               username_field = each_form.find_control("UsernameOrEmail")
+               if not username_field is None:
+	           self.form = each_form
+	           break
+            except mechanize._form.ControlNotFoundError:
+               continue
+
+        if self.form is None:
+            logger.error("Could not find login form on page ... aborting login")
+            return
+
+        self.form['UsernameOrEmail'] = username
+        self.form['Password'] = password        
         self.submit()
+
         response = self.response().read()
         logger.log(5, response)
         if not '/my/default.aspx' in response:
@@ -587,7 +609,7 @@ class PqBrowser(mechanize.Browser):
 
         logger = logging.getLogger('browser.delpq')
         self.open("%s/pocket/default.aspx" % BASE_URL)
-        self.select_form(id="aspnetForm")
+        self.select_form(name="aspnetForm")
         self.form.set_all_readonly(False)
         self.form['ctl00$ContentBody$PQDownloadList$hidIds'] = (",".join(chkid)
                                                                 + ",")
@@ -603,7 +625,7 @@ class PqBrowser(mechanize.Browser):
         try:
             logger.info("Trigger My Finds PQ...")
             self.open("%s/pocket/default.aspx" % BASE_URL)
-            self.select_form(id="aspnetForm")
+            self.select_form(name="aspnetForm")
             self.form.set_all_readonly(False)
             self.form['ctl00$ContentBody$PQListControl1$btnScheduleNow'] = (
                 "Add to Queue"
@@ -720,7 +742,7 @@ def main():
     if opts.netdebug:
         import socks
         import socket
-        socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, "127.0.0.1", 1080)
+        socks.setdefaultproxy(socks.PROXY_TYPE_HTTP, "127.0.0.1", 8080)
         socket.socket = socks.socksocket
 
     browser = PqBrowser()
@@ -820,7 +842,7 @@ def main():
                     if cparser.get('Log', link['chkdelete']) == link['date']:
                         logger.info('"{name}" skipped because {friendlyname} '
                                     'with date {date} has already been '
-                                    'downloaded.'.format(**link))
+                                    'downloaded.'.format(**unicode_values_to_strings(link)))
                         continue
                 except (ConfigParser.NoOptionError,
                         ConfigParser.NoSectionError):
@@ -831,11 +853,11 @@ def main():
                 continue
             if (check_linkmatch(link, args)) | (args == []):
                 logger.info('"{name}" ({date}) will be downloaded'.
-                            format(**link))
+                            format(**unicode_values_to_strings(link)))
                 dllist.append(link)
             else:
                 logger.debug('"{name}" skipped because it is not in the '
-                'arguments list.'.format(**link))
+                'arguments list.'.format(**unicode_values_to_strings(link)))
         if dllist == []:
             logger.info("All PQs skipped." if logger.getEffectiveLevel() <= 10
                         else "All PQs skipped. If you want to know why, "
@@ -857,10 +879,10 @@ def main():
         if link['name'] != link['friendlyname']:
             logger.info('Downloading {0}/{1}: "{name}" (Friendly Name: '
                         '{friendlyname}) ({size}) [{date}]'.
-                        format(number+1, len(dllist), **link))
+                        format(number+1, len(dllist), **unicode_values_to_strings(link)))
         else:
             logger.info('Downloading {0}/{1}: "{name}" ({size}) [{date}]'.
-                        format(number+1, len(dllist), **link))
+                        format(number+1, len(dllist), **unicode_values_to_strings(link)))
         filename = '{friendlyname}.pqtmp'.format(**link)
         link['filename'] = filename
         delay()
@@ -901,9 +923,9 @@ def main():
                 }
 
         single = {
-                'normal':'{mapstr}{chkdelete}_{friendlyname}',
+                'normal':'{mapstr}{friendlyname}',
                 'myfinds':'{mapstr}MyFinds',
-                'waypoints':'{mapstr}{chkdelete}_{friendlyname}_waypoints'
+                'waypoints':'{mapstr}{friendlyname}_waypoints'
                 }
 
         def __getattr__(self, name):
@@ -929,7 +951,7 @@ def main():
         logger.info("Unzipping the downloaded files")
         for link in dllist:
             template = FilenameDict(link,'gpx')
-            logger.info("Unzipping {realfilename}".format(**link))
+            logger.info("Unzipping {realfilename}".format(**unicode_values_to_strings(link)))
 
             zfile = zipfile.ZipFile(link['realfilename'])
             for info in zfile.infolist():
@@ -970,7 +992,7 @@ def main():
             rmlist.append(link['chkdelete'])
             logger.info(
                 'Pocket Query "{name}" will be removed (ID: {chkdelete})'.
-                format(**link))
+                format(**unicode_values_to_strings(link)))
         if rmlist != []:
             if opts.ctl != 'search':
                 ctl = opts.ctl
@@ -998,8 +1020,10 @@ def main():
         raw_input('Press any key to exit.')
 
 if __name__ == "__main__":
-    logging.info("PQdl v%s (%s) by leoluk. Updates and help on "
-                 "www.leoluk.de/paperless-caching/pqdl" ,
-                 __version__, __status__)
+    logging.info("""PQdl v%s (%s) by %s.
+               Updates, code and help on   https://github.com/lx-crisc/PqDL
+               Old Information: Updates and help on www.leoluk.de/paperless-caching/pqdl but still DOWN """ ,
+               __version__, __status__, __author__)
+                 
     main()
     logging.info("Done")
